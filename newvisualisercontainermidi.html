@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>D₆ Matrix MIDI Playground</title>
+
+<style>
+body { font-family: sans-serif; padding: 20px; }
+.main-wrap { display: flex; gap: 40px; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, 50px);
+  grid-template-rows: repeat(3, 50px);
+  gap: 6px;
+}
+.cell {
+  border: 2px solid #333;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+}
+.cell.animate { background: gold; transition: background 0.15s; }
+
+button {
+  padding: 8px 12px;
+  margin: 4px;
+  color: white;
+  border: none;
+  cursor: pointer;
+}
+.id { background:#777; }
+.rot { background:#2b6cb0; }
+.ref { background:#c53030; }
+
+#randomBtn { background:#c53030; }
+#undoBtn { background:#2f855a; }
+
+.flash-red { background:red !important; }
+.flash-green { background:#38a169 !important; }
+
+.active { outline: 3px solid gold; }
+
+table { border-collapse: collapse; margin-top:10px; }
+td, th {
+  border:1px solid #555;
+  padding:6px;
+  text-align:center;
+}
+
+.rotCell { background:#bee3f8; }
+.refCell { background:#fed7d7; }
+.idCell  { background:#e2e8f0; }
+
+.currentRow { outline: 2px solid #3182ce; }
+.currentCol { outline: 2px solid #c53030; }
+.hoverCell { outline: 2px dashed gold; background: #fefcbf; }
+
+.explain {
+  margin-top: 12px;
+  padding: 10px;
+  background: #f7fafc;
+  border-left: 4px solid #4299e1;
+  font-size: 14px;
+}
+</style>
+</head>
+<body>
+
+<h1>D₆ Matrix Containerised permutations. Midi algorithms in Transformational permutation space. </h1>Simon Kilshaw 2026
+<br></br>
+
+<div class="main-wrap">
+  <div>
+    <div id="grid" class="grid"></div>
+    <p><b>Current:</b> <span id="current">e</span></p>
+
+    <div id="buttons"></div>
+
+    <button id="randomBtn">Generate Random 6 Strings (space bar)</button>
+    <button id="undoBtn">Previous string (return key)</button>
+
+    <p><b>Current Values Midi output [cc1 cc2 cc3 cc4 cc5 cc6]</b></p>
+    <div id="valueDisplay"
+         style="font-family:monospace; font-size:16px; padding:6px; background:#f0f0f0;">
+    </div>
+  </div>
+
+  <div>
+    <div id="table"></div>
+
+    <div class="explain">
+      <b>How to read the Cayley table:</b><br><br>
+      • Rows = left operation<br>
+      • Columns = right operation<br>
+      • Cell = composition result<br><br>
+      <span style="color:#3182ce">Blue outline</span> = current row<br>
+      <span style="color:#c53030">Red outline</span> = current column<br>
+      <span style="border:2px dashed gold">Dashed highlight</span> = currently hovered cell<br><br>
+      Hover a cell to apply that permutation.
+    </div>
+  </div>
+</div>
+
+<script>
+const elements = [
+  {name:"e",   type:"id",  p:[1,2,3,4,5,6]},
+  {name:"r",   type:"rot", p:[2,3,4,5,6,1]},
+  {name:"r²",  type:"rot", p:[3,4,5,6,1,2]},
+  {name:"r³",  type:"rot", p:[4,5,6,1,2,3]},
+  {name:"r⁴",  type:"rot", p:[5,6,1,2,3,4]},
+  {name:"r⁵",  type:"rot", p:[6,1,2,3,4,5]},
+  {name:"s",   type:"ref", p:[1,6,5,4,3,2]},
+  {name:"sr",  type:"ref", p:[2,1,6,5,4,3]},
+  {name:"sr²", type:"ref", p:[3,2,1,6,5,4]},
+  {name:"sr³", type:"ref", p:[4,3,2,1,6,5]},
+  {name:"sr⁴", type:"ref", p:[5,4,3,2,1,6]},
+  {name:"sr⁵", type:"ref", p:[6,5,4,3,2,1]}
+];
+
+let valueState = [1,2,3,4,5,6];
+let historyStack = [];
+let current = "e";
+let midiOutput;
+let lastMIDITime = 0;
+
+navigator.requestMIDIAccess().then(m=>{
+  midiOutput = [...m.outputs.values()][0];
+});
+
+const compose = (a,b)=>b.map(i=>a[i-1]);
+
+function renderGrid(){
+  const g = document.getElementById("grid");
+  g.innerHTML = "";
+  valueState.forEach(v=>{
+    const d = document.createElement("div");
+    d.className = "cell";
+    d.textContent = v;
+    g.appendChild(d);
+  });
+}
+
+function animateGrid(){
+  document.querySelectorAll(".cell").forEach(c=>{
+    c.classList.add("animate");
+    setTimeout(()=>c.classList.remove("animate"),150);
+  });
+}
+
+function updateListDisplay(){
+  document.getElementById("valueDisplay")
+    .textContent = `[ ${valueState.join(", ")} ]`;
+}
+
+function highlightButtons(){
+  document.querySelectorAll("#buttons button").forEach(b=>{
+    b.classList.toggle("active", b.textContent === current);
+  });
+}
+
+function highlightTable(){
+  const table = document.querySelector("#table table");
+  if(!table) return;
+
+  table.querySelectorAll("td,th")
+       .forEach(c=>c.classList.remove("currentRow","currentCol"));
+
+  const idx = elements.findIndex(e=>e.name===current) + 1;
+
+  for(let j=1;j<table.rows[idx].cells.length;j++)
+    table.rows[idx].cells[j].classList.add("currentRow");
+
+  for(let i=1;i<table.rows.length;i++)
+    table.rows[i].cells[idx].classList.add("currentCol");
+}
+
+function sendMIDI(){
+  if(!midiOutput) return;
+  if(Date.now()-lastMIDITime < 30) return;
+  lastMIDITime = Date.now();
+  valueState.forEach((v,i)=>midiOutput.send([0xB0, i+1, v]));
+}
+
+function apply(e){
+  valueState = compose(valueState,e.p);
+  current = e.name;
+
+  document.getElementById("current").textContent = current;
+
+  renderGrid();
+  animateGrid();
+  updateListDisplay();
+  highlightButtons();
+  highlightTable();
+  sendMIDI();
+}
+
+function randomizeMatrix(){
+  historyStack.push([...valueState]);
+  valueState = Array.from({length:6},()=>Math.floor(Math.random()*128));
+  renderGrid();
+  animateGrid();
+  updateListDisplay();
+  sendMIDI();
+}
+
+function undo(){
+  if(!historyStack.length) return;
+  valueState = historyStack.pop();
+  renderGrid();
+  animateGrid();
+  updateListDisplay();
+  sendMIDI();
+}
+
+function buildButtons(){
+  const b = document.getElementById("buttons");
+  elements.forEach(e=>{
+    const btn = document.createElement("button");
+    btn.textContent = e.name;
+    btn.className = e.type;
+    btn.onclick = ()=>apply(e);
+    b.appendChild(btn);
+  });
+}
+
+function buildTable(){
+  const t = document.getElementById("table");
+  const table = document.createElement("table");
+
+  const h = document.createElement("tr");
+  h.innerHTML = "<th>∘</th>" + elements.map(e=>`<th>${e.name}</th>`).join("");
+  table.appendChild(h);
+
+  elements.forEach(a=>{
+    const r = document.createElement("tr");
+    r.innerHTML = `<th>${a.name}</th>`;
+    elements.forEach(b=>{
+      const p = compose(a.p,b.p);
+      const e = elements.find(x=>x.p.join()==p.join());
+      const td = document.createElement("td");
+      td.textContent = e.name;
+      td.className = e.type+"Cell";
+
+      td.onmouseenter = ()=>{
+        // Clear previous hover
+        table.querySelectorAll("td").forEach(c=>c.classList.remove("hoverCell"));
+        // Highlight hovered cell
+        td.classList.add("hoverCell");
+        // Apply permutation
+        apply(e);
+      };
+
+      r.appendChild(td);
+    });
+    table.appendChild(r);
+  });
+
+  t.appendChild(table);
+}
+
+document.addEventListener("keydown",e=>{
+  if(e.code==="Space"){
+    e.preventDefault();
+    const btn = document.getElementById("randomBtn");
+    btn.classList.add("flash-red");
+    setTimeout(()=>btn.classList.remove("flash-red"),150);
+    randomizeMatrix();
+  }
+  if(e.code==="Enter"){
+    e.preventDefault();
+    const btn = document.getElementById("undoBtn");
+    btn.classList.add("flash-green");
+    setTimeout(()=>btn.classList.remove("flash-green"),150);
+    undo();
+  }
+});
+
+buildButtons();
+buildTable();
+renderGrid();
+updateListDisplay();
+highlightButtons();
+highlightTable();
+</script>
+</body>
+</html>
